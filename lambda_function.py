@@ -129,7 +129,6 @@ def load_security_maps(jwt: str) -> dict:
     Returns: {
       'buy':  {'id_to_name': {...}, 'name_to_id': {...}},
       'sell': {'id_to_name': {...}, 'name_to_id': {...}},
-      'hold': {'id_to_name': {...}, 'name_to_id': {...}},
     }
     """
     global _SECURITY_CACHE
@@ -140,7 +139,6 @@ def load_security_maps(jwt: str) -> dict:
     for key, label_id in [
         ("buy",  BUY_INTEREST_LABEL_ID),
         ("sell", SELL_INTEREST_LABEL_ID),
-        ("hold", HOLDING_LABEL_ID),
     ]:
         # Endpoint may differ — confirm against Pipeline API docs.
         # Likely path: /admin/person_custom_field_labels/{id}.json
@@ -339,7 +337,6 @@ def render_form(person: dict, sec_maps: dict, person_id: int) -> dict:
 
     buy_ids  = cf_id_list(cf.get(BUY_INTEREST_FIELD))
     sell_ids = cf_id_list(cf.get(SELL_INTEREST_FIELD))
-    hold_ids = cf_id_list(cf.get(HOLDING_FIELD))
 
     def chip_html(ids, side, name_map):
         side_class = f"chip-{side}"
@@ -355,12 +352,6 @@ def render_form(person: dict, sec_maps: dict, person_id: int) -> dict:
             )
         return f'<div class="chip-row" id="chip-row-{side}">{"".join(chips)}</div>'
 
-    def readonly_chips(ids, name_map):
-        if not ids:
-            return f'<p style="font-size:13px;color:#aaa;font-style:italic">None on file.</p>'
-        chips = [f'<span class="chip">{html_lib.escape(name_map.get(i, f"#{i}"))}</span>' for i in ids]
-        return f'<div class="chip-row">{"".join(chips)}</div>'
-
     def datalist_html(name_map, list_id):
         names = sorted(name_map.values(), key=lambda s: s.lower())
         options = "".join(
@@ -370,7 +361,6 @@ def render_form(person: dict, sec_maps: dict, person_id: int) -> dict:
 
     buy_chips_html  = chip_html(buy_ids,  "buy",  sec_maps["buy"]["id_to_name"])
     sell_chips_html = chip_html(sell_ids, "sell", sec_maps["sell"]["id_to_name"])
-    hold_chips_html = readonly_chips(hold_ids, sec_maps["hold"]["id_to_name"])
 
     buy_datalist  = datalist_html(sec_maps["buy"]["id_to_name"],  "buy_options")
     sell_datalist = datalist_html(sec_maps["sell"]["id_to_name"], "sell_options")
@@ -406,12 +396,6 @@ def render_form(person: dict, sec_maps: dict, person_id: int) -> dict:
         {sell_chips_html}
         <input type="text" id="add_sell_input" list="sell_options" class="add-input" placeholder="Type a company name..." autocomplete="off" style="margin-top:10px">
         {sell_datalist}
-      </div>
-
-      <div class="section">
-        <p class="section-label">Holdings (for our reference)</p>
-        {hold_chips_html}
-        <p class="help">If your holdings have changed, just reply to any of our emails and we'll update.</p>
       </div>
 
       <div class="btn-row">
