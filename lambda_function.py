@@ -31,6 +31,7 @@ import os
 import hmac
 import hashlib
 import base64
+import html as html_lib
 import boto3
 from datetime import datetime, timezone
 
@@ -274,15 +275,51 @@ def html_response(body_html: str, status: int = 200) -> dict:
     {body_html}
   </div>
   <script>
-    // Sync chip visual state with checkbox. The <label> naturally toggles
-    // the checkbox on click, so we just listen for change events. Don't
-    // add a manual click handler — that conflicts with the label's default
-    // behavior and ends up double-toggling.
-    document.querySelectorAll('.chip input[type=checkbox]').forEach(function(cb) {{
+    function wireChip(cb) {{
       var chip = cb.closest('.chip');
       function sync() {{ chip.classList.toggle('removed', !cb.checked); }}
       cb.addEventListener('change', sync);
       sync();
+    }}
+    document.querySelectorAll('.chip input[type=checkbox]').forEach(wireChip);
+
+    function tryAddChip(side, inputEl) {{
+      var name = inputEl.value.trim();
+      if (!name) return;
+      var map = (typeof NAME_TO_ID !== 'undefined') ? NAME_TO_ID[side] : null;
+      if (!map) return;
+      var id = map[name];
+      if (id == null) return;
+      var row = document.getElementById('chip-row-' + side);
+      if (!row) return;
+      if (row.querySelector('input[name="keep_' + side + '"][value="' + id + '"]')) {{
+        inputEl.value = '';
+        return;
+      }}
+      var label = document.createElement('label');
+      label.className = 'chip chip-' + side;
+      var cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.name = 'keep_' + side;
+      cb.value = id;
+      cb.checked = true;
+      label.appendChild(cb);
+      label.appendChild(document.createTextNode(name));
+      var x = document.createElement('span');
+      x.className = 'chip-x';
+      x.textContent = '×';
+      label.appendChild(x);
+      row.appendChild(label);
+      wireChip(cb);
+      inputEl.value = '';
+    }}
+
+    document.querySelectorAll('.add-input').forEach(function(inp) {{
+      var side = inp.id === 'add_buy_input' ? 'buy' : 'sell';
+      inp.addEventListener('change', function() {{ tryAddChip(side, inp); }});
+      inp.addEventListener('keydown', function(e) {{
+        if (e.key === 'Enter') {{ e.preventDefault(); tryAddChip(side, inp); }}
+      }});
     }});
   </script>
 </body>
@@ -304,30 +341,43 @@ def render_form(person: dict, sec_maps: dict, person_id: int) -> dict:
     sell_ids = cf_id_list(cf.get(SELL_INTEREST_FIELD))
     hold_ids = cf_id_list(cf.get(HOLDING_FIELD))
 
-    def chip_html(ids, side_class, name_map, field_name):
-        if not ids:
-            return f'<p style="font-size:13px;color:#aaa;font-style:italic">None on file.</p>'
+    def chip_html(ids, side, name_map):
+        side_class = f"chip-{side}"
+        field_name = f"keep_{side}"
         chips = []
         for i in ids:
             label = name_map.get(i, f"#{i}")
-            # Each chip is a label wrapping a checkbox. Checked = keep.
             chips.append(
                 f'<label class="chip {side_class}">'
                 f'<input type="checkbox" name="{field_name}" value="{i}" checked>'
-                f'{label}<span class="chip-x">×</span>'
+                f'{html_lib.escape(label)}<span class="chip-x">×</span>'
                 f'</label>'
             )
-        return f'<div class="chip-row">{"".join(chips)}</div>'
+        return f'<div class="chip-row" id="chip-row-{side}">{"".join(chips)}</div>'
 
     def readonly_chips(ids, name_map):
         if not ids:
             return f'<p style="font-size:13px;color:#aaa;font-style:italic">None on file.</p>'
-        chips = [f'<span class="chip">{name_map.get(i, f"#{i}")}</span>' for i in ids]
+        chips = [f'<span class="chip">{html_lib.escape(name_map.get(i, f"#{i}"))}</span>' for i in ids]
         return f'<div class="chip-row">{"".join(chips)}</div>'
 
-    buy_chips_html  = chip_html(buy_ids,  "chip-buy",  sec_maps["buy"]["id_to_name"],  "keep_buy")
-    sell_chips_html = chip_html(sell_ids, "chip-sell", sec_maps["sell"]["id_to_name"], "keep_sell")
+    def datalist_html(name_map, list_id):
+        names = sorted(name_map.values(), key=lambda s: s.lower())
+        options = "".join(
+            f'<option value="{html_lib.escape(n, quote=True)}">' for n in names
+        )
+        return f'<datalist id="{list_id}">{options}</datalist>'
+
+    buy_chips_html  = chip_html(buy_ids,  "buy",  sec_maps["buy"]["id_to_name"])
+    sell_chips_html = chip_html(sell_ids, "sell", sec_maps["sell"]["id_to_name"])
     hold_chips_html = readonly_chips(hold_ids, sec_maps["hold"]["id_to_name"])
+
+    buy_datalist  = datalist_html(sec_maps["buy"]["id_to_name"],  "buy_options")
+    sell_datalist = datalist_html(sec_maps["sell"]["id_to_name"], "sell_options")
+
+    buy_name_to_id  = {name: i for i, name in sec_maps["buy"]["id_to_name"].items()}
+    sell_name_to_id = {name: i for i, name in sec_maps["sell"]["id_to_name"].items()}
+    name_to_id_json = json.dumps({"buy": buy_name_to_id, "sell": sell_name_to_id})
 
     unsub_url = (
         f"?action=unsubscribe&person_id={person_id}&token={make_token(person_id)}"
@@ -347,13 +397,15 @@ def render_form(person: dict, sec_maps: dict, person_id: int) -> dict:
       <div class="section">
         <p class="section-label">Looking to buy</p>
         {buy_chips_html}
-        <input type="text" name="add_buy" placeholder="Add company names, comma-separated (e.g. OpenAI, Stripe)" style="margin-top:10px">
+        <input type="text" id="add_buy_input" list="buy_options" class="add-input" placeholder="Type a company name..." autocomplete="off" style="margin-top:10px">
+        {buy_datalist}
       </div>
 
       <div class="section">
         <p class="section-label">Looking to sell</p>
         {sell_chips_html}
-        <input type="text" name="add_sell" placeholder="Add company names, comma-separated" style="margin-top:10px">
+        <input type="text" id="add_sell_input" list="sell_options" class="add-input" placeholder="Type a company name..." autocomplete="off" style="margin-top:10px">
+        {sell_datalist}
       </div>
 
       <div class="section">
@@ -375,6 +427,9 @@ def render_form(person: dict, sec_maps: dict, person_id: int) -> dict:
           We'll stop sending the daily buy/sell update. Your interest data above stays as-is.
         </p>
       </div>
+      <script>
+        var NAME_TO_ID = {name_to_id_json};
+      </script>
     </form>
 
     <div class="footer-note">Reference only. Not an offer to buy or sell securities.</div>
@@ -471,8 +526,6 @@ def handle_post(body_str: str, qs: dict = None) -> dict:
 
     person_id_str = singles.get("person_id", "")
     submit_action = singles.get("submit_action", "confirm")
-    add_buy_raw   = singles.get("add_buy", "").strip()
-    add_sell_raw  = singles.get("add_sell", "").strip()
 
     try:
         person_id = int(person_id_str)
@@ -520,23 +573,8 @@ def handle_post(body_str: str, qs: dict = None) -> dict:
             except (ValueError, TypeError): pass
         return out
 
-    def parse_added(text, name_to_id):
-        if not text: return [], []
-        wanted, unresolved = [], []
-        for raw in text.split(","):
-            name = raw.strip()
-            if not name: continue
-            sid = name_to_id.get(name.lower())
-            if sid is not None:
-                wanted.append(sid)
-            else:
-                unresolved.append(name)
-        return wanted, unresolved
-
     new_buy_kept  = parse_kept(keep_buy)
     new_sell_kept = parse_kept(keep_sell)
-    add_buy_ids,  unresolved_buy  = parse_added(add_buy_raw,  sec_maps["buy"]["name_to_id"])
-    add_sell_ids, unresolved_sell = parse_added(add_sell_raw, sec_maps["sell"]["name_to_id"])
 
     # Dedup while preserving order
     def dedup(seq):
@@ -546,8 +584,8 @@ def handle_post(body_str: str, qs: dict = None) -> dict:
                 seen.add(x); out.append(x)
         return out
 
-    final_buy  = dedup(new_buy_kept  + add_buy_ids)
-    final_sell = dedup(new_sell_kept + add_sell_ids)
+    final_buy  = dedup(new_buy_kept)
+    final_sell = dedup(new_sell_kept)
 
     # Fetch current values for diff in Chad's notification email
     current = call_pipeline_api("GET", f"/people/{person_id}.json", jwt=jwt)
@@ -589,12 +627,6 @@ def handle_post(body_str: str, qs: dict = None) -> dict:
     if sell_removed: lines.append(f"Sell Interest removed: {', '.join(sell_removed)}")
     if not (buy_added or buy_removed or sell_added or sell_removed):
         lines.append("No changes — interests re-confirmed as-is.")
-    if unresolved_buy or unresolved_sell:
-        lines.append("")
-        lines.append("⚠ Could not resolve these names to known securities:")
-        for n in unresolved_buy:  lines.append(f"  buy:  {n}")
-        for n in unresolved_sell: lines.append(f"  sell: {n}")
-        lines.append("Add them manually in Pipeline if they should be tracked.")
 
     send_email(
         CHAD_EMAIL,
