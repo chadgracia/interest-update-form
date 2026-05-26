@@ -139,6 +139,7 @@ def load_security_maps(jwt: str) -> dict:
     for key, label_id in [
         ("buy",  BUY_INTEREST_LABEL_ID),
         ("sell", SELL_INTEREST_LABEL_ID),
+        ("hold", HOLDING_LABEL_ID),
     ]:
         # Endpoint may differ — confirm against Pipeline API docs.
         # Likely path: /admin/person_custom_field_labels/{id}.json
@@ -181,6 +182,54 @@ def parse_cf(cf, field):
     if isinstance(v, list):
         return v[0] if v else None
     return v
+
+
+def person_email(person: dict) -> str:
+    """Best-effort extract of the contact's primary email."""
+    e = person.get("email")
+    if isinstance(e, str) and e:
+        return e
+    emails = person.get("emails") or person.get("contact_emails") or []
+    if isinstance(emails, list) and emails:
+        first = emails[0]
+        if isinstance(first, dict):
+            return first.get("address") or first.get("email") or ""
+        if isinstance(first, str):
+            return first
+    return ""
+
+
+def build_unsub_email(person: dict, sec_maps: dict, person_id: int) -> tuple:
+    """Return (subject, body) for the Chad-facing broadcast-unsub notification."""
+    cf           = person.get("custom_fields", {}) or {}
+    contact_name = person.get("full_name") or person.get("first_name") or "client"
+    email        = person_email(person) or "(none on file)"
+    company      = person.get("company_name") or "(none on file)"
+
+    def names(field, side):
+        ids = cf_id_list(cf.get(field))
+        m   = sec_maps[side]["id_to_name"]
+        return [m.get(i, f"#{i}") for i in ids]
+
+    holdings = names(HOLDING_FIELD,       "hold")
+    buys     = names(BUY_INTEREST_FIELD,  "buy")
+    sells    = names(SELL_INTEREST_FIELD, "sell")
+
+    subject = f"Broadcast unsubscribe: {contact_name} (#{person_id})"
+    body = "\n".join([
+        f"Contact opted out of daily interest updates (Broadcast=No). Interest data unchanged.",
+        "",
+        f"Name:    {contact_name}",
+        f"Email:   {email}",
+        f"Company: {company}",
+        "",
+        f"Holdings:      {', '.join(holdings) if holdings else '(none)'}",
+        f"Buy Interest:  {', '.join(buys)     if buys     else '(none)'}",
+        f"Sell Interest: {', '.join(sells)    if sells    else '(none)'}",
+        "",
+        f"https://app.pipelinecrm.com/people/{person_id}",
+    ])
+    return subject, body
 
 
 # ── HTML shell (same styling as deal form, plus chip styles) ──────────────────
@@ -472,6 +521,13 @@ def handle_get(params: dict) -> dict:
                 f"https://app.pipelinecrm.com/people/{person_id}"
             )
             return error_page("We couldn't save that right now. Chad has been notified.")
+
+        person_resp = call_pipeline_api("GET", f"/people/{person_id}.json", jwt=jwt)
+        person      = person_resp["data"] if person_resp["status"] == 200 else {}
+        sec_maps    = load_security_maps(jwt)
+        subject, body = build_unsub_email(person, sec_maps, person_id)
+        send_email(CHAD_EMAIL, subject, body)
+
         return success_page(
             "Unsubscribed",
             "You won't receive daily interest updates anymore. Your interest data is unchanged."
@@ -535,13 +591,13 @@ def handle_post(body_str: str, qs: dict = None) -> dict:
                 f"https://app.pipelinecrm.com/people/{person_id}"
             )
             return error_page("We couldn't save that right now. Chad has been notified.")
-        send_email(
-            CHAD_EMAIL,
-            f"Broadcast unsubscribe via interest form: person {person_id}",
-            f"Contact opted out of daily interest updates (Broadcast=No). "
-            f"Interest data unchanged.\n"
-            f"https://app.pipelinecrm.com/people/{person_id}"
-        )
+
+        person_resp = call_pipeline_api("GET", f"/people/{person_id}.json", jwt=jwt)
+        person      = person_resp["data"] if person_resp["status"] == 200 else {}
+        sec_maps    = load_security_maps(jwt)
+        subject, body = build_unsub_email(person, sec_maps, person_id)
+        send_email(CHAD_EMAIL, subject, body)
+
         return success_page(
             "Unsubscribed",
             "You won't receive daily interest updates anymore. Your interest data is unchanged."
