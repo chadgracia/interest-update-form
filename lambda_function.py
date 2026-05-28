@@ -81,7 +81,7 @@ def make_token(id_value: int) -> str:
 def verify_token(id_value: int, token: str) -> bool:
     expected = hmac.new(HMAC_SECRET.encode(), str(id_value).encode(), hashlib.sha256).digest()
     expected_b64 = base64.urlsafe_b64encode(expected).decode().rstrip("=")
-    return hmac.compare_digest(expected_b64, token)
+    return hmac.compare_digest(expected_b64, token or "")
 
 
 def call_pipeline_api(method, endpoint, payload=None, jwt=None):
@@ -314,6 +314,15 @@ def html_response(body_html: str, status: int = 200) -> dict:
     .success-icon {{ font-size: 48px; text-align: center; margin-bottom: 16px; }}
     .countdown {{ font-size: 13px; color: #999; text-align: center; margin-top: 16px; }}
     .footer-note {{ text-align: center; margin-top: 20px; font-size: 11px; color: #bbb; }}
+    .btn-col {{ display:flex; flex-direction:column; gap:10px; }}
+    .modal-overlay {{ display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:1000; align-items:center; justify-content:center; padding:16px; }}
+    .modal-card {{ background:#fff; border-radius:12px; padding:28px 24px; max-width:460px; width:100%; box-shadow:0 8px 32px rgba(0,0,0,0.2); }}
+    .modal-heading {{ font-size:18px; font-weight:700; text-align:center; margin-bottom:8px; }}
+    .modal-sub {{ font-size:14px; color:#666; text-align:center; margin-bottom:20px; line-height:1.5; }}
+    .modal-actions {{ display:flex; flex-direction:column; gap:10px; }}
+    .modal-opt {{ width:100%; border:none; border-radius:8px; padding:13px; font-size:15px; font-weight:600; cursor:pointer; background:#1a1a1a; color:#fff; font-family:inherit; }}
+    .modal-opt-soft {{ background:#e8f0fe; color:#1a4a8a; }}
+    .modal-back {{ display:block; width:100%; margin-top:14px; background:none; border:none; color:#888; font-size:13px; cursor:pointer; text-decoration:underline; font-family:inherit; }}
   </style>
 </head>
 <body>
@@ -368,6 +377,25 @@ def html_response(body_html: str, status: int = 200) -> dict:
         if (e.key === 'Enter') {{ e.preventDefault(); tryAddChip(side, inp); }}
       }});
     }});
+
+    (function() {{
+      var form = document.querySelector('form');
+      if (!form) return;
+      var overlay = document.getElementById('removeAllModal');
+      if (!overlay) return;
+      var had = (typeof HAD_INTERESTS !== 'undefined') && HAD_INTERESTS;
+      function checkedKeep() {{
+        return form.querySelectorAll('input[name="keep_buy"]:checked, input[name="keep_sell"]:checked').length;
+      }}
+      form.addEventListener('submit', function(e) {{
+        var s = e.submitter;
+        if (!s || s.value !== 'confirm') return;   // only the main Update button
+        if (had && checkedKeep() === 0) {{ e.preventDefault(); overlay.style.display = 'flex'; }}
+      }});
+      var back = document.getElementById('modalBackBtn');
+      if (back) back.addEventListener('click', function() {{ overlay.style.display = 'none'; }});
+      document.addEventListener('keydown', function(e) {{ if (e.key === 'Escape') overlay.style.display = 'none'; }});
+    }})();
   </script>
 </body>
 </html>"""
@@ -386,6 +414,7 @@ def render_form(person: dict, sec_maps: dict, person_id: int) -> dict:
 
     buy_ids  = cf_id_list(cf.get(BUY_INTEREST_FIELD))
     sell_ids = cf_id_list(cf.get(SELL_INTEREST_FIELD))
+    had_js   = "true" if (buy_ids or sell_ids) else "false"
 
     def chip_html(ids, side, name_map):
         side_class = f"chip-{side}"
@@ -418,8 +447,9 @@ def render_form(person: dict, sec_maps: dict, person_id: int) -> dict:
     sell_name_to_id = {name: i for i, name in sec_maps["sell"]["id_to_name"].items()}
     name_to_id_json = json.dumps({"buy": buy_name_to_id, "sell": sell_name_to_id})
 
+    token = make_token(person_id)
     unsub_url = (
-        f"?action=unsubscribe&person_id={person_id}&token={make_token(person_id)}"
+        f"?action=unsubscribe&person_id={person_id}&token={token}"
     )
 
     form_html = f"""
@@ -432,6 +462,7 @@ def render_form(person: dict, sec_maps: dict, person_id: int) -> dict:
 
     <form method="POST">
       <input type="hidden" name="person_id" value="{person_id}">
+      <input type="hidden" name="token" value="{token}">
 
       <div class="section">
         <p class="section-label">Looking to buy</p>
@@ -453,15 +484,28 @@ def render_form(person: dict, sec_maps: dict, person_id: int) -> dict:
       </div>
 
       <div class="unsub-broadcast">
-        <button type="submit" name="submit_action" value="unsubscribe_broadcast" class="btn-unsub" formnovalidate>
+        <button type="submit" name="submit_action" value="stop_updates" class="btn-unsub" formnovalidate>
           Unsubscribe from interest updates
         </button>
         <p class="help" style="text-align:center;margin-top:8px">
           We'll stop sending the daily buy/sell update. Your interest data above stays as-is.
         </p>
       </div>
+      <div class="modal-overlay" id="removeAllModal" role="dialog" aria-modal="true">
+        <div class="modal-card">
+          <div class="modal-heading">Are you sure you want to remove your interests?</div>
+          <p class="modal-sub">You can simply opt out of daily updates if you like — we'll keep your interests on file.</p>
+          <div class="modal-actions">
+            <button type="submit" name="submit_action" value="remove_interests" class="modal-opt">Remove all indications of interest</button>
+            <button type="submit" name="submit_action" value="stop_updates" class="modal-opt modal-opt-soft">Stop daily updates</button>
+            <button type="submit" name="submit_action" value="remove_and_stop" class="modal-opt">Both</button>
+          </div>
+          <button type="button" id="modalBackBtn" class="modal-back">Go back</button>
+        </div>
+      </div>
       <script>
         var NAME_TO_ID = {name_to_id_json};
+        var HAD_INTERESTS = {had_js};
       </script>
     </form>
 
@@ -492,6 +536,51 @@ def success_page(message: str, sub: str = "") -> dict:
     return html_response(html)
 
 
+def render_remove_options_page(person_id: int) -> dict:
+    """Server-side backstop for no-JS / automated POSTs that bypass the modal."""
+    token = make_token(person_id)
+    back  = f"?person_id={person_id}&token={token}"
+    html = f"""
+    <h1>Are you sure you want to remove your interests?</h1>
+    <p class="subtitle">You can simply opt out of daily updates if you like — we'll keep your interests on file.</p>
+    <form method="POST">
+      <input type="hidden" name="person_id" value="{person_id}">
+      <input type="hidden" name="token" value="{token}">
+      <div class="btn-col">
+        <button type="submit" name="submit_action" value="remove_interests" class="btn-primary">Remove all indications of interest</button>
+        <button type="submit" name="submit_action" value="stop_updates" class="btn-cancel">Stop daily updates</button>
+        <button type="submit" name="submit_action" value="remove_and_stop" class="btn-primary">Both</button>
+      </div>
+      <a href="{back}" class="modal-back" style="display:block;text-align:center;margin-top:14px;text-decoration:none">Go back</a>
+    </form>
+    """
+    return html_response(html)
+
+
+def stop_daily_updates(person_id: int, jwt: str) -> dict:
+    """Set Broadcast=No (keep interests), notify Chad, and confirm to the user."""
+    payload = {"person": {"custom_fields": {BROADCAST_FIELD: BROADCAST_NO}}}
+    result  = call_pipeline_api("PUT", f"/people/{person_id}.json", payload, jwt=jwt)
+    if result["status"] != 200:
+        logger.error(f"Broadcast unsub failed: {result}")
+        send_email(
+            CHAD_EMAIL,
+            f"⚠ Broadcast unsub failed — person {person_id}",
+            f"Pipeline write failed: HTTP {result['status']}: {result['data']}\n"
+            f"https://app.pipelinecrm.com/people/{person_id}"
+        )
+        return error_page("We couldn't save that right now. Chad has been notified.")
+    person_resp = call_pipeline_api("GET", f"/people/{person_id}.json", jwt=jwt)
+    person      = person_resp["data"] if person_resp["status"] == 200 else {}
+    sec_maps    = load_security_maps(jwt)
+    subject, body = build_unsub_email(person, sec_maps, person_id)
+    send_email(CHAD_EMAIL, subject, body)
+    return success_page(
+        "Daily updates stopped",
+        "You won't receive the daily buy/sell update anymore. Your interests are unchanged."
+    )
+
+
 # ── GET handler ───────────────────────────────────────────────────────────────
 
 def handle_get(params: dict) -> dict:
@@ -506,32 +595,21 @@ def handle_get(params: dict) -> dict:
     if not verify_token(person_id, token):
         return error_page("Invalid or expired link.")
 
-    jwt = get_jwt()
-
-    # One-click unsubscribe from interest broadcast (Broadcast=No)
+    # Unsubscribe link: don't mutate on GET — show a confirm page that POSTs
+    # stop_updates. Avoids accidental opt-outs from link prefetchers/scanners.
     if action == "unsubscribe":
-        payload = {"person": {"custom_fields": {BROADCAST_FIELD: BROADCAST_NO}}}
-        result  = call_pipeline_api("PUT", f"/people/{person_id}.json", payload, jwt=jwt)
-        if result["status"] != 200:
-            logger.error(f"Broadcast unsub failed: {result}")
-            send_email(
-                CHAD_EMAIL,
-                f"⚠ Broadcast unsub failed — person {person_id}",
-                f"Pipeline write failed: HTTP {result['status']}: {result['data']}\n"
-                f"https://app.pipelinecrm.com/people/{person_id}"
-            )
-            return error_page("We couldn't save that right now. Chad has been notified.")
+        confirm_html = f"""
+        <h1>Stop daily interest updates?</h1>
+        <p class="subtitle">We'll stop sending the daily buy/sell update. Your interests stay on file.</p>
+        <form method="POST">
+          <input type="hidden" name="person_id" value="{person_id}">
+          <input type="hidden" name="token" value="{html_lib.escape(token, quote=True)}">
+          <button type="submit" name="submit_action" value="stop_updates" class="btn-primary" style="width:100%">Stop updates</button>
+        </form>
+        """
+        return html_response(confirm_html)
 
-        person_resp = call_pipeline_api("GET", f"/people/{person_id}.json", jwt=jwt)
-        person      = person_resp["data"] if person_resp["status"] == 200 else {}
-        sec_maps    = load_security_maps(jwt)
-        subject, body = build_unsub_email(person, sec_maps, person_id)
-        send_email(CHAD_EMAIL, subject, body)
-
-        return success_page(
-            "Unsubscribed",
-            "You won't receive daily interest updates anymore. Your interest data is unchanged."
-        )
+    jwt = get_jwt()
 
     # Default: render form
     result = call_pipeline_api("GET", f"/people/{person_id}.json", jwt=jwt)
@@ -545,7 +623,7 @@ def handle_get(params: dict) -> dict:
 
 # ── POST handler ──────────────────────────────────────────────────────────────
 
-def handle_post(body_str: str, qs: dict = None) -> dict:
+def handle_post(body_str, qs=None, src_ip="", user_agent=""):
     # Manual parse so we can collect repeated keys (multiple keep_buy=N)
     raw_pairs = []
     for part in body_str.split("&"):
@@ -572,36 +650,20 @@ def handle_post(body_str: str, qs: dict = None) -> dict:
     except (ValueError, TypeError):
         return error_page("Invalid submission.")
 
+    token = singles.get("token", "")
+    if not verify_token(person_id, token):
+        logger.warning(f"POST token verify failed: person={person_id} ip={src_ip} ua={user_agent!r}")
+        return error_page("Invalid or expired link.")
+
     jwt = get_jwt()
 
     # ── Cancel: do nothing, just bounce to marketplace ────────────────────────
     if submit_action == "cancel":
         return success_page("No changes made")
 
-    # ── Unsubscribe button under interests list ───────────────────────────────
-    if submit_action == "unsubscribe_broadcast":
-        payload = {"person": {"custom_fields": {BROADCAST_FIELD: BROADCAST_NO}}}
-        result  = call_pipeline_api("PUT", f"/people/{person_id}.json", payload, jwt=jwt)
-        if result["status"] != 200:
-            logger.error(f"Broadcast unsub (POST) failed: {result}")
-            send_email(
-                CHAD_EMAIL,
-                f"⚠ Broadcast unsub failed — person {person_id}",
-                f"Pipeline write failed: HTTP {result['status']}: {result['data']}\n"
-                f"https://app.pipelinecrm.com/people/{person_id}"
-            )
-            return error_page("We couldn't save that right now. Chad has been notified.")
-
-        person_resp = call_pipeline_api("GET", f"/people/{person_id}.json", jwt=jwt)
-        person      = person_resp["data"] if person_resp["status"] == 200 else {}
-        sec_maps    = load_security_maps(jwt)
-        subject, body = build_unsub_email(person, sec_maps, person_id)
-        send_email(CHAD_EMAIL, subject, body)
-
-        return success_page(
-            "Unsubscribed",
-            "You won't receive daily interest updates anymore. Your interest data is unchanged."
-        )
+    # ── Stop daily updates (Broadcast=No), keep interests ─────────────────────
+    if submit_action in ("stop_updates", "unsubscribe_broadcast"):
+        return stop_daily_updates(person_id, jwt)
 
     # ── Confirm: write Buy/Sell interest arrays ───────────────────────────────
     sec_maps = load_security_maps(jwt)
@@ -613,9 +675,6 @@ def handle_post(body_str: str, qs: dict = None) -> dict:
             except (ValueError, TypeError): pass
         return out
 
-    new_buy_kept  = parse_kept(keep_buy)
-    new_sell_kept = parse_kept(keep_sell)
-
     # Dedup while preserving order
     def dedup(seq):
         seen, out = set(), []
@@ -624,8 +683,8 @@ def handle_post(body_str: str, qs: dict = None) -> dict:
                 seen.add(x); out.append(x)
         return out
 
-    final_buy  = dedup(new_buy_kept)
-    final_sell = dedup(new_sell_kept)
+    kept_buy  = dedup(parse_kept(keep_buy))
+    kept_sell = dedup(parse_kept(keep_sell))
 
     # Fetch current values for diff in Chad's notification email
     current = call_pipeline_api("GET", f"/people/{person_id}.json", jwt=jwt)
@@ -634,10 +693,24 @@ def handle_post(body_str: str, qs: dict = None) -> dict:
     old_sell = set(cf_id_list(cur_cf.get(SELL_INTEREST_FIELD)))
     contact_name = (current.get("data") or {}).get("full_name", "client") if current["status"] == 200 else "client"
 
-    payload = {"person": {"custom_fields": {
-        BUY_INTEREST_FIELD:  final_buy,
-        SELL_INTEREST_FIELD: final_sell,
-    }}}
+    submitted_any_keep = bool(keep_buy) or bool(keep_sell)
+    had_interests      = bool(old_buy) or bool(old_sell)
+    broadcast_off      = False
+    if submit_action == "remove_interests":
+        final_buy, final_sell = [], []
+    elif submit_action == "remove_and_stop":
+        final_buy, final_sell = [], []
+        broadcast_off = True
+    else:  # confirm
+        if had_interests and not submitted_any_keep:
+            logger.warning(f"Total-removal confirm intercepted: person={person_id} old_buy={len(old_buy)} old_sell={len(old_sell)} param_keys={sorted(singles.keys())} ip={src_ip} ua={user_agent!r}")
+            return render_remove_options_page(person_id)
+        final_buy, final_sell = kept_buy, kept_sell
+
+    custom = {BUY_INTEREST_FIELD: final_buy, SELL_INTEREST_FIELD: final_sell}
+    if broadcast_off:
+        custom[BROADCAST_FIELD] = BROADCAST_NO
+    payload = {"person": {"custom_fields": custom}}
     result = call_pipeline_api("PUT", f"/people/{person_id}.json", payload, jwt=jwt)
     if result["status"] != 200:
         logger.error(f"Interest update failed: {result}")
@@ -667,6 +740,8 @@ def handle_post(body_str: str, qs: dict = None) -> dict:
     if sell_removed: lines.append(f"Sell Interest removed: {', '.join(sell_removed)}")
     if not (buy_added or buy_removed or sell_added or sell_removed):
         lines.append("No changes — interests re-confirmed as-is.")
+    if broadcast_off:
+        lines += ["", "Daily updates: STOPPED (Broadcast=No)."]
 
     send_email(
         CHAD_EMAIL,
@@ -674,13 +749,20 @@ def handle_post(body_str: str, qs: dict = None) -> dict:
         "\n".join(lines)
     )
 
+    if submit_action == "remove_and_stop":
+        return success_page("Done", "Your interests were removed and daily updates stopped.")
+    if submit_action == "remove_interests":
+        return success_page("Interests removed", "Your buy/sell interests have been cleared.")
     return success_page("Update received!")
 
 
 # ── Lambda entry point ────────────────────────────────────────────────────────
 
 def lambda_handler(event, context):
-    method    = event.get("requestContext", {}).get("http", {}).get("method", "GET").upper()
+    http       = event.get("requestContext", {}).get("http", {})
+    method     = http.get("method", "GET").upper()
+    src_ip     = http.get("sourceIp", "")
+    user_agent = http.get("userAgent", "") or (event.get("headers") or {}).get("user-agent", "")
     qs        = event.get("queryStringParameters") or {}
     body      = event.get("body") or ""
     is_base64 = event.get("isBase64Encoded", False)
@@ -688,13 +770,13 @@ def lambda_handler(event, context):
     if is_base64 and body:
         body = base64.b64decode(body).decode("utf-8", errors="replace")
 
-    logger.info(f"{method} params={qs} is_base64={is_base64}")
+    logger.info(f"{method} params={qs} is_base64={is_base64} ip={src_ip} ua={user_agent!r}")
 
     try:
         if method == "GET":
             return handle_get(qs)
         elif method == "POST":
-            return handle_post(body, qs)
+            return handle_post(body, qs, src_ip=src_ip, user_agent=user_agent)
         else:
             return error_page("Method not allowed.")
     except Exception as e:
