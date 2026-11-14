@@ -39,7 +39,11 @@ logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 # ── Config ────────────────────────────────────────────────────────────────────
-HMAC_SECRET         = os.environ.get("HMAC_SECRET", "change-me-in-env")
+HMAC_SECRET         = os.environ.get("HMAC_SECRET", "")
+# Previous HMAC_SECRET while it is being rotated (optional, empty = off). Every
+# action on this form (open, edit, save, unsubscribe) is for the person the link
+# was sent to, so a token signed with it is still accepted here. Never used to sign.
+HMAC_SECRET_OLD     = os.environ.get("HMAC_SECRET_OLD", "")
 SES_SENDER          = "agent@agent.graciagroup.com"
 AGENT_EMAIL         = "agent@agent.graciagroup.com"
 CHAD_EMAIL          = "cgracia@rainmakersecurities.com"
@@ -72,16 +76,33 @@ def get_jwt():
     return json.loads(obj['Body'].read())['jwt']
 
 
-def make_token(id_value: int) -> str:
-    msg = str(id_value).encode()
-    sig = hmac.new(HMAC_SECRET.encode(), msg, hashlib.sha256).digest()
+def _sign(secret: str, id_value) -> str:
+    sig = hmac.new(secret.encode(), str(id_value).encode(), hashlib.sha256).digest()
     return base64.urlsafe_b64encode(sig).decode().rstrip("=")
 
 
+def make_token(id_value: int) -> str:
+    """Signs with the current HMAC_SECRET only. Empty key -> "" (never signs
+    with an empty key; such a link never verifies)."""
+    if not HMAC_SECRET:
+        logger.error("HMAC_SECRET is not set: interest-form links cannot be signed or accepted.")
+        return ""
+    return _sign(HMAC_SECRET, id_value)
+
+
 def verify_token(id_value: int, token: str) -> bool:
-    expected = hmac.new(HMAC_SECRET.encode(), str(id_value).encode(), hashlib.sha256).digest()
-    expected_b64 = base64.urlsafe_b64encode(expected).decode().rstrip("=")
-    return hmac.compare_digest(expected_b64, token or "")
+    """Current HMAC_SECRET, or HMAC_SECRET_OLD (legacy) when set. Fails closed
+    (accepts nothing) when HMAC_SECRET is empty."""
+    token = token or ""
+    if not HMAC_SECRET:
+        logger.error("HMAC_SECRET is not set: interest-form links cannot be signed or accepted.")
+        return False
+    if not token:
+        return False
+    for key in (HMAC_SECRET, HMAC_SECRET_OLD):
+        if key and hmac.compare_digest(_sign(key, id_value), token):
+            return True
+    return False
 
 
 def call_pipeline_api(method, endpoint, payload=None, jwt=None):
